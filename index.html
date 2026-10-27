@@ -732,7 +732,8 @@
         // halaman ini. Batasi key di Google AI Studio (HTTP referrer + kuota),
         // atau pindahkan panggilan AI ke server/proxy untuk produksi.
         // =====================================================================
-        const GEMINI_API_KEY = "AIzaSyAIbV0dvhpl_0V7PNmaOh9pDCHbw9XcDe8";
+        const GEMINI_API_KEY = "via-proxy"; // key asli disimpan di Cloudflare Worker, bukan di file ini
+        const GEMINI_PROXY = "https://ohealthy-ai.aimotions99.workers.dev"; // contoh: https://ohealthy-ai.namaanda.workers.dev
 
         // ---------- Global State ----------
         let currentUser = null;
@@ -1608,7 +1609,7 @@
         async function getModelList() {
             if (cachedModels) return cachedModels;
             try {
-                const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+                const res = await fetch(GEMINI_PROXY + '/v1beta/models?pageSize=200', {
                     headers: { 'x-goog-api-key': GEMINI_API_KEY }
                 });
                 const data = await res.json();
@@ -1636,7 +1637,7 @@
             try {
                 const generationConfig = { responseMimeType: 'application/json', temperature: 0.1 };
                 if (withThinkingOff) generationConfig.thinkingConfig = { thinkingBudget: 0 };
-                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+                const res = await fetch(`${GEMINI_PROXY}/v1beta/models/${model}:generateContent`, {
                     method: 'POST',
                     signal: ctrl.signal,
                     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
@@ -1653,8 +1654,8 @@
         }
 
         async function callGemini(parts) {
-            if (!GEMINI_API_KEY || GEMINI_API_KEY.startsWith('ISI_')) {
-                throw new Error('API key Gemini belum diisi di kode (konstanta GEMINI_API_KEY).');
+            if (GEMINI_PROXY.startsWith('ISI_')) {
+                throw new Error('URL Worker Gemini belum diisi di kode (konstanta GEMINI_PROXY).');
             }
             const models = await getModelList();
             let lastMsg = 'Gagal menghubungi AI.';
