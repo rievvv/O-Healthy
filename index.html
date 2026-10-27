@@ -1609,9 +1609,7 @@
         async function getModelList() {
             if (cachedModels) return cachedModels;
             try {
-                const res = await fetch(GEMINI_PROXY + '/v1beta/models?pageSize=200', {
-                    headers: { 'x-goog-api-key': GEMINI_API_KEY }
-                });
+                const res = await fetch(GEMINI_PROXY + '/v1beta/models?pageSize=200');
                 const data = await res.json();
                 const found = (data.models || [])
                     .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
@@ -1640,14 +1638,14 @@
                 const res = await fetch(`${GEMINI_PROXY}/v1beta/models/${model}:generateContent`, {
                     method: 'POST',
                     signal: ctrl.signal,
-                    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+                    headers: { 'Content-Type': 'text/plain' }, // text/plain = tanpa preflight CORS; Worker meneruskan sebagai JSON
                     body: JSON.stringify({ contents: [{ parts }], generationConfig })
                 });
                 let d = null;
                 try { d = await res.json(); } catch (_) {}
                 return { ok: res.ok && d && !d.error, status: res.status, data: d, msg: (d && d.error && d.error.message) || `HTTP ${res.status}` };
             } catch (e) {
-                return { ok: false, status: 0, data: null, msg: e.name === 'AbortError' ? 'Waktu habis (server AI terlalu lama merespons)' : e.message };
+                return { ok: false, status: 0, data: null, msg: e.name === 'AbortError' ? 'Waktu habis (server AI terlalu lama merespons)' : (/failed to fetch/i.test(e.message) ? 'Tidak bisa terhubung ke Worker AI. Pastikan Worker sudah di-deploy dengan kode terbaru.' : e.message) };
             } finally {
                 clearTimeout(timer);
             }
