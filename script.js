@@ -948,7 +948,14 @@
                 }
                 await sleep(1500);
             }
-            if (!data) throw new Error(lastMsg);
+            if (!data) {
+                if (/Worker AI/.test(lastMsg)) {
+                    let t = 'gagal';
+                    try { const r = await fetch(GEMINI_PROXY + '/v1beta/models?pageSize=1'); t = 'HTTP ' + r.status; } catch (_) {}
+                    lastMsg += ` [Tes GET ke Worker: ${t}]`;
+                }
+                throw new Error(lastMsg);
+            }
 
             const text = (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
             if (!text) throw new Error('AI tidak memberikan hasil. Coba foto/deskripsi yang lebih jelas.');
@@ -1029,7 +1036,7 @@
             } catch (err) {
                 if (seq !== analysisSeq) return;
                 console.error(err);
-                showToast(`Gagal menganalisis foto: ${err.message}. Anda bisa memakai menu Simpan Kalori Manual.`, 'error');
+                showToast(`Gagal menganalisis foto: ${err.message} Anda bisa memakai menu Simpan Kalori Manual.`, 'error');
             } finally {
                 if (seq === analysisSeq) setAnalyzing(false);
             }
@@ -1050,7 +1057,7 @@
             } catch (err) {
                 if (seq !== analysisSeq) return;
                 console.error(err);
-                showToast(`Gagal menganalisis teks: ${err.message}. Anda bisa memakai menu Simpan Kalori Manual.`, 'error');
+                showToast(`Gagal menganalisis teks: ${err.message} Anda bisa memakai menu Simpan Kalori Manual.`, 'error');
             } finally {
                 if (seq === analysisSeq) setAnalyzing(false);
             }
@@ -1230,25 +1237,40 @@
 
         // ---------- Katalog Kalori Manual (data di data.js) ----------
         function foodPer(f, g) { const k = g / 100; return { calories: Math.round(f[1] * k), protein: +(f[2] * k).toFixed(1), fat: +(f[3] * k).toFixed(1), carbs: +(f[4] * k).toFixed(1) }; }
+        // "1 piring" -> {b:1, name:'piring', gram:200}; "10 tusuk" -> {b:10, name:'tusuk', gram:15}
+        function catUnit(f) {
+            const m = f[5].match(/^([\d.\/]+)\s*(.*)$/); let b = 1;
+            if (m) b = m[1].includes('/') ? m[1].split('/').reduce((a, c) => a / c) : parseFloat(m[1]);
+            return { b, name: m ? m[2] : f[5], gram: f[6] / b };
+        }
+        function catGrams(i) {
+            const f = FOOD_CATALOG[i], q = parseFloat(document.getElementById('cat-qty-' + i).value) || 0;
+            return document.getElementById('cat-unit-' + i).value === 'p' ? q * catUnit(f).gram : q;
+        }
+        function nutriText(n) { return `${n.calories} kcal • P ${n.protein}g • K ${n.carbs}g • L ${n.fat}g`; }
+        function updateCat(i) { document.getElementById('cat-info-' + i).textContent = nutriText(foodPer(FOOD_CATALOG[i], catGrams(i))); }
         function renderCatalog() {
             const q = (document.getElementById('cat-search').value || '').toLowerCase().trim();
             const rows = FOOD_CATALOG.map((f, i) => [f, i]).filter(([f]) => !q || f[0].toLowerCase().includes(q)).slice(0, 60);
-            document.getElementById('cat-list').innerHTML = rows.length ? rows.map(([f, i]) => { const n = foodPer(f, f[6]);
-                return `<div class="flex items-center justify-between gap-2 p-3 border border-slate-100 rounded-xl"><div class="min-w-0"><div class="font-semibold text-sm text-slate-800">${esc(f[0])}</div><div class="text-xs text-slate-500">${esc(f[5])} (${f[6]} g) • ${n.calories} kcal • P ${n.protein}g • K ${n.carbs}g • L ${n.fat}g</div></div><div class="flex items-center gap-2 shrink-0"><input id="cat-qty-${i}" type="number" min="0.25" step="0.25" value="1" class="w-16 px-2 py-1 border border-slate-200 rounded-lg text-sm"><button onclick="addCatalogFood(${i})" class="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold">Simpan</button></div></div>`; }).join('')
-                : '<p class="text-sm text-slate-500 p-3">Tidak ditemukan. Gunakan form isi sendiri di bawah.</p>';
+            document.getElementById('cat-list').innerHTML = rows.length ? rows.map(([f, i]) => {
+                const u = catUnit(f), liquid = /gelas|cangkir|kaleng|botol/.test(f[5]);
+                return `<div class="p-3 border border-slate-100 rounded-xl space-y-2"><div class="font-semibold text-sm text-slate-800">${esc(f[0])}</div><div class="flex flex-wrap items-center gap-2"><input id="cat-qty-${i}" type="number" min="0" step="any" value="${u.b}" oninput="updateCat(${i})" class="w-20 px-2 py-1 border border-slate-200 rounded-lg text-sm"><select id="cat-unit-${i}" onchange="updateCat(${i})" class="px-2 py-1 border border-slate-200 rounded-lg text-sm bg-white"><option value="p">${esc(u.name)} (≈${Math.round(u.gram)} g)</option><option value="g">gram</option>${liquid ? '<option value="ml">ml</option>' : ''}</select><button onclick="addCatalogFood(${i})" class="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold">Simpan</button></div><div id="cat-info-${i}" class="text-xs text-slate-500">${nutriText(foodPer(f, f[6]))}</div></div>`;
+            }).join('') : '<p class="text-sm text-slate-500 p-3">Tidak ditemukan. Gunakan form isi sendiri di bawah.</p>';
         }
         function logFood(name, n, desc) {
             dbData.journal.unshift({ id: Date.now(), date: dateStr(), time: timeStr(), name, calories: n.calories, protein: n.protein, carbs: n.carbs, fat: n.fat, description: desc });
             saveUserData(); renderAll(); showToast('Berhasil disimpan ke Jurnal!'); switchTab('journal');
         }
         function addCatalogFood(i) {
-            const f = FOOD_CATALOG[i], qty = parseFloat(document.getElementById('cat-qty-' + i).value) || 1;
-            logFood(f[0], foodPer(f, f[6] * qty), `Katalog manual: ${qty} × ${f[5]} (${Math.round(f[6] * qty)} g)`);
+            const f = FOOD_CATALOG[i], q = parseFloat(document.getElementById('cat-qty-' + i).value) || 0, unit = document.getElementById('cat-unit-' + i).value;
+            if (q <= 0) { showToast('Isi jumlah lebih dari 0.', 'error'); return; }
+            const g = catGrams(i), label = unit === 'p' ? `${q} ${catUnit(f).name} (≈${Math.round(g)} g)` : `${q} ${unit === 'g' ? 'gram' : 'ml'}`;
+            logFood(f[0], foodPer(f, g), `Katalog manual: ${label}`);
         }
         function saveCustomFood() {
             const v = id => document.getElementById(id).value, p = id => parseFloat(v(id)) || 0;
-            const name = v('cf-name').trim(), c = parseFloat(v('cf-cal'));
+            const name = v('cf-name').trim(), c = parseFloat(v('cf-cal')), amt = v('cf-amt').trim();
             if (!name || !isFinite(c)) { showToast('Isi nama dan kalori.', 'error'); return; }
-            logFood(name, { calories: Math.round(c), protein: p('cf-p'), carbs: p('cf-c'), fat: p('cf-f') }, 'Input manual');
-            ['cf-name', 'cf-cal', 'cf-p', 'cf-c', 'cf-f'].forEach(id => document.getElementById(id).value = '');
+            logFood(name, { calories: Math.round(c), protein: p('cf-p'), carbs: p('cf-c'), fat: p('cf-f') }, 'Input manual' + (amt ? `: ${amt} ${v('cf-unit')}` : ''));
+            ['cf-name', 'cf-cal', 'cf-p', 'cf-c', 'cf-f', 'cf-amt'].forEach(id => document.getElementById(id).value = '');
         }

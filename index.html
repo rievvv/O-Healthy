@@ -471,6 +471,10 @@
                         <div class="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
                             <h3 class="font-bold text-slate-800">Tidak ada di katalog? Isi sendiri</h3>
                             <input id="cf-name" placeholder="Nama makanan/minuman" class="w-full px-4 py-2 border border-slate-200 rounded-xl text-sm">
+                            <div class="flex gap-2">
+                                <input id="cf-amt" type="number" min="0" step="any" placeholder="Jumlah (opsional)" class="flex-1 px-3 py-2 border border-slate-200 rounded-xl text-sm">
+                                <select id="cf-unit" class="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white"><option>gram</option><option>ml</option><option>piring</option><option>mangkuk</option><option>gelas</option><option>porsi</option><option>buah</option><option>potong</option><option>butir</option><option>bungkus</option><option>sendok makan</option></select>
+                            </div>
                             <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
                                 <input id="cf-cal" type="number" min="0" placeholder="Kalori (kcal)" class="px-3 py-2 border border-slate-200 rounded-xl text-sm">
                                 <input id="cf-p" type="number" min="0" placeholder="Protein (g)" class="px-3 py-2 border border-slate-200 rounded-xl text-sm">
