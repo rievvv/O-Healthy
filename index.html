@@ -8,6 +8,8 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
     <script>
         tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } } }
     </script>
@@ -778,6 +780,7 @@
             set(key, val) {
                 try {
                     localStorage.setItem(key, JSON.stringify(val));
+                    cloudPush(key, val);
                     return true;
                 } catch (e) {
                     console.error('Gagal menyimpan', key, e);
@@ -787,8 +790,131 @@
             }
         };
 
+        // =====================================================================
+        // SINKRONISASI CLOUD (Firebase Firestore) - agar akun, ACC, data & chat
+        // sama di semua perangkat. Isi konfigurasi di bawah (lihat panduan).
+        // =====================================================================
+        const FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDTPFlCEsMlZBZFVj7HfSI4qeJ8nK5StJo",
+            authDomain: "o-healthy-4b945.firebaseapp.com",
+            projectId: "o-healthy-4b945",
+            appId: "1:759764595046:web:d682ce2774d780e57c98a7"
+        };
+        let fdb = null;
+        try {
+            if (window.firebase && FIREBASE_CONFIG.projectId.indexOf('ISI_') !== 0) {
+                firebase.initializeApp(FIREBASE_CONFIG);
+                fdb = firebase.firestore();
+            } else { console.warn('Firebase belum dikonfigurasi: data hanya tersimpan di perangkat ini.'); }
+        } catch (e) { console.error('Firebase gagal:', e); }
+
+        const ek = e => encodeURIComponent(e);
+        function cloudCol(key) {
+            if (key.startsWith('ohealthy_data_')) return ['userdata', ek(key.slice(14))];
+            if (key.startsWith('ohealthy_chat_')) return ['chats', ek(key.slice(14))];
+            return null;
+        }
+        function cloudErr(e) { console.error(e); showToast('Gagal sinkron ke server. Periksa koneksi.', 'error'); }
+        function cloudPush(key, val) {
+            const c = cloudCol(key);
+            if (fdb && c) fdb.collection(c[0]).doc(c[1]).set({ v: JSON.stringify(val), t: Date.now() }).catch(cloudErr);
+        }
+        async function cloudPull(key) {
+            const c = cloudCol(key);
+            if (!fdb || !c) return;
+            try { const d = await fdb.collection(c[0]).doc(c[1]).get(); if (d.exists) localStorage.setItem(key, d.data().v); }
+            catch (e) { console.error(e); }
+        }
+        function mergeUser(u) {
+            const us = LS.get('ohealthy_users', []);
+            const i = us.findIndex(x => normEmail(x.email) === normEmail(u.email));
+            if (i >= 0) us[i] = u; else us.push(u);
+            localStorage.setItem('ohealthy_users', JSON.stringify(us));
+        }
+        async function pullUser(email) {
+            if (!fdb) return;
+            try { const d = await fdb.collection('users').doc(ek(email)).get(); if (d.exists) mergeUser(d.data()); }
+            catch (e) { console.error(e); }
+        }
+        async function pullUserByName(name) {
+            if (!fdb) return;
+            try { const q = await fdb.collection('users').where('name', '==', name).limit(1).get(); q.forEach(d => mergeUser(d.data())); }
+            catch (e) { console.error(e); }
+        }
+
         function getUsers() { return LS.get('ohealthy_users', []); }
-        function saveUsers(users) { return LS.set('ohealthy_users', users); }
+        function saveUsers(users) {
+            const old = getUsers();
+            const ok = LS.set('ohealthy_users', users);
+            if (ok && fdb) {
+                users.forEach(u => {
+                    const o = old.find(x => x.email === u.email);
+                    if (!o || JSON.stringify(o) !== JSON.stringify(u)) fdb.collection('users').doc(ek(u.email)).set(u).catch(cloudErr);
+                });
+                old.forEach(o => {
+                    if (!users.find(u => u.email === o.email)) ['users', 'userdata', 'chats'].forEach(c => fdb.collection(c).doc(ek(o.email)).delete().catch(cloudErr));
+                });
+            }
+            return ok;
+        }
+
+        // Admin: pantau semua user & chat secara realtime (HP & laptop selalu sama)
+        let adminUnsubs = [], chatUnsub = null, chatWatchKey = null;
+        function stopSync() {
+            adminUnsubs.forEach(f => f()); adminUnsubs = [];
+            if (chatUnsub) chatUnsub(); chatUnsub = null; chatWatchKey = null;
+        }
+        function adminVisible() { return !document.getElementById('admin-dashboard-screen').classList.contains('hidden'); }
+        function startAdminSync() {
+            if (!fdb || adminUnsubs.length) return;
+            let first = true;
+            adminUnsubs.push(fdb.collection('users').onSnapshot(snap => {
+                const list = snap.docs.map(d => d.data());
+                if (first) {
+                    first = false;
+                    // Sekali per perangkat: unggah akun lama yang hanya ada di browser ini
+                    if (!localStorage.getItem('ohealthy_migrated')) {
+                        localStorage.setItem('ohealthy_migrated', '1');
+                        const have = new Set(list.map(u => u.email));
+                        let moved = false;
+                        getUsers().forEach(u => {
+                            if (have.has(u.email)) return;
+                            moved = true;
+                            fdb.collection('users').doc(ek(u.email)).set(u).catch(cloudErr);
+                            ['ohealthy_data_', 'ohealthy_chat_'].forEach(pre => {
+                                const raw = localStorage.getItem(pre + u.email), c = cloudCol(pre + u.email);
+                                if (raw) fdb.collection(c[0]).doc(c[1]).set({ v: raw, t: Date.now() }).catch(cloudErr);
+                            });
+                        });
+                        if (moved) return; // snapshot berikutnya sudah memuat akun hasil unggahan
+                    }
+                }
+                localStorage.setItem('ohealthy_users', JSON.stringify(list));
+                if (adminVisible()) renderAdminTable();
+            }, e => console.error(e)));
+            adminUnsubs.push(fdb.collection('chats').onSnapshot(snap => {
+                let changed = false;
+                snap.docChanges().forEach(ch => {
+                    if (ch.doc.metadata.hasPendingWrites || ch.type === 'removed') return;
+                    localStorage.setItem('ohealthy_chat_' + decodeURIComponent(ch.doc.id), ch.doc.data().v);
+                    changed = true;
+                });
+                const ae = document.activeElement;
+                const typing = ae && ae.id && ae.id.indexOf('admin-reply-') === 0;
+                if (changed && adminVisible() && !typing) renderAdminChatsList();
+            }, e => console.error(e)));
+        }
+        // User: chat dengan admin tampil realtime
+        function watchChat(key) {
+            if (!fdb || key === chatWatchKey) return;
+            if (chatUnsub) chatUnsub();
+            chatWatchKey = key; chatUnsub = null;
+            const c = cloudCol(key);
+            if (!c || c[1] === 'guest') return;
+            chatUnsub = fdb.collection(c[0]).doc(c[1]).onSnapshot(d => {
+                if (d.exists && !d.metadata.hasPendingWrites) { localStorage.setItem(key, d.data().v); loadUserChatMessages(); }
+            }, e => console.error(e));
+        }
         function normEmail(s) { return String(s || '').trim().toLowerCase(); }
 
         function emptyData() {
@@ -841,13 +967,14 @@
         }
 
         // ---------- Init ----------
-        window.onload = function () {
+        window.onload = async function () {
             // Minta browser agar data tidak dihapus otomatis saat penyimpanan menipis
             if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => {}); }
 
             document.getElementById('metric-date').value = dateStr();
             resetDateFilter(false);
 
+            await pullUser('admin');
             let users = getUsers();
             if (!users.find(u => u.email === 'admin')) {
                 users.push({ name: 'Super Admin', email: 'admin', password: 'adminpassword', role: 'admin', status: 'approved' });
@@ -857,6 +984,9 @@
             // Pulihkan sesi, tapi validasi ulang terhadap daftar user terbaru
             const sess = LS.get('ohealthy_current_user', null);
             if (sess && sess.email) {
+                await pullUser(sess.email);
+                await cloudPull('ohealthy_data_' + sess.email);
+                await cloudPull('ohealthy_chat_' + sess.email);
                 const u = getUsers().find(x => x.email === sess.email);
                 if (u && (u.role === 'admin' || u.status === 'approved')) {
                     currentUser = u;
@@ -894,12 +1024,13 @@
             }
         }
 
-        function handleRegister(e) {
+        async function handleRegister(e) {
             e.preventDefault();
             const name = document.getElementById('reg-name').value.trim();
             const email = normEmail(document.getElementById('reg-email').value);
             const password = document.getElementById('reg-password').value;
 
+            await pullUser(email);
             if (getUsers().find(u => normEmail(u.email) === email)) {
                 showToast('Email sudah terdaftar. Silakan masuk.', 'error');
                 return;
@@ -953,12 +1084,14 @@
             showToast('Pendaftaran berhasil! Silakan masuk menggunakan akun Anda.', 'success');
         }
 
-        function handleLogin(e) {
+        async function handleLogin(e) {
             e.preventDefault();
             const identifier = document.getElementById('login-email').value.trim();
             const password = document.getElementById('login-password').value;
             const idLower = identifier.toLowerCase();
 
+            await pullUser(idLower);
+            if (!getUsers().some(u => String(u.email).toLowerCase() === idLower)) await pullUserByName(identifier);
             const found = getUsers().find(u =>
                 (String(u.email).toLowerCase() === idLower || u.name === identifier) && u.password === password
             );
@@ -967,6 +1100,7 @@
 
             if (found.role !== 'admin' && found.status !== 'approved') {
                 pendingLoginEmail = found.email;
+                await cloudPull('ohealthy_chat_' + found.email);
                 showToast('Akses Anda ditolak. Mohon hubungi Admin untuk konfirmasi pembelian.', 'error');
                 document.getElementById('chat-widget-container').classList.remove('hidden');
                 loadUserChatMessages();
@@ -975,6 +1109,8 @@
 
             pendingLoginEmail = null;
             currentUser = found;
+            await cloudPull('ohealthy_data_' + found.email);
+            await cloudPull('ohealthy_chat_' + found.email);
             LS.set('ohealthy_current_user', { email: found.email });
 
             if (found.role === 'admin') {
@@ -993,6 +1129,7 @@
             currentUser = null;
             pendingLoginEmail = null;
             localStorage.removeItem('ohealthy_current_user');
+            stopSync();
             document.getElementById('auth-screen').classList.remove('hidden');
             document.getElementById('dashboard-screen').classList.add('hidden');
             document.getElementById('admin-dashboard-screen').classList.add('hidden');
@@ -1021,6 +1158,7 @@
             document.getElementById('dashboard-screen').classList.add('hidden');
             document.getElementById('chat-widget-container').classList.add('hidden');
             document.getElementById('admin-dashboard-screen').classList.remove('hidden');
+            startAdminSync();
             renderAdminTable();
             renderAdminChatsList();
         }
@@ -1100,6 +1238,7 @@
         }
 
         function loadUserChatMessages() {
+            watchChat(getChatKey());
             const msgs = LS.get(getChatKey(), []);
             const body = document.getElementById('chat-messages-body');
             if (msgs.length === 0) {
